@@ -1,12 +1,17 @@
 import enum
 from typing import Dict, List, Optional, Union
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import yaml
 
 from perception_dataset.utils.logger import configure_logger
 
 logger = configure_logger(modname=__name__)
+
+# Config keys that were removed when INS-specific ego-state handling was generalized into
+# per-topic selection (ego_pose / twist_topic / acceleration_topic / geocoordinate_topic). They are
+# warned about (not silently ignored) so stale configs are easy to spot.
+_DEPRECATED_PARAM_KEYS = ("with_ins", "ins_topic_mapping", "world_frame_id")
 
 
 class DataType(enum.Enum):
@@ -91,6 +96,19 @@ def _check_check_lidar_info_field(
     return True
 
 
+class EgoPoseParams(BaseModelWithDictAccess):
+    """ego_pose generation settings.
+
+    ego_pose translation/rotation is read from a dynamic TF topic as the transform
+    `parent_frame_id <- child_frame_id`. When `parent_frame_id == child_frame_id` the pose is the
+    identity and no TF lookup is required.
+    """
+
+    tf_topic: str = "/tf"  # dynamic TF topic the transform is read from
+    parent_frame_id: str = "map"  # ego_pose target frame (the global/world frame)
+    child_frame_id: str = "base_link"  # ego_pose source frame (the ego/body frame)
+
+
 class Rosbag2ConverterParams(BaseModelWithDictAccess):
     task: str
     input_base: str  # path to the input rosbag2 directory (multiple rosbags in the directory)
@@ -118,7 +136,6 @@ class Rosbag2ConverterParams(BaseModelWithDictAccess):
     object_msg_type: str = ""
     traffic_light_signal_topic_name: str = ""
     traffic_light_rois_topic_name: str = ""
-    world_frame_id: str = "map"
     with_camera: bool = True
     generate_bbox_from_cuboid: bool = False
 
@@ -153,12 +170,32 @@ class Rosbag2ConverterParams(BaseModelWithDictAccess):
     generate_frame_every: int = 1  # pick frames out of every this number.
     generate_frame_every_meter: float = 5.0  # pick frames when ego vehicle moves certain meters
 
-    # INS
-    with_ins: bool = False  # whether to convert rosbag with INS topics for localization
-    ins_topic_mapping: Optional[Dict[str, str]] = None  # topic mappings for specific vehicles
+    # ego_pose (translation/rotation) from a dynamic TF topic; see EgoPoseParams.
+    ego_pose: EgoPoseParams = Field(default_factory=EgoPoseParams)
+    # Optional ego-state fields written into ego_pose.json, each populated from a freely chosen topic
+    # (leave None to skip that field). Values are taken from the message as-is, except twist/accel
+    # are rotated into ego_pose.child_frame_id via /tf_static when the source frame differs (no sign
+    # heuristics). Supported source types:
+    #   twist_topic:         nav_msgs/Odometry | geometry_msgs/TwistStamped
+    #                        | geometry_msgs/TwistWithCovarianceStamped
+    #   acceleration_topic:  sensor_msgs/Imu | geometry_msgs/AccelStamped
+    #                        | geometry_msgs/AccelWithCovarianceStamped
+    #   geocoordinate_topic: sensor_msgs/NavSatFix (stored verbatim, no frame transform)
+    twist_topic: Optional[str] = None
+    acceleration_topic: Optional[str] = None
+    geocoordinate_topic: Optional[str] = None
     with_vehicle_status: bool = False  # whether to convert rosbag with vehicle status
 
     def __init__(self, **args):
+        deprecated = [key for key in _DEPRECATED_PARAM_KEYS if key in args]
+        if deprecated:
+            logger.warning(
+                f"Ignoring removed config key(s) {deprecated}. INS-specific handling was replaced "
+                "by ego_pose (tf_topic/parent_frame_id/child_frame_id) and "
+                "twist_topic/acceleration_topic/geocoordinate_topic."
+            )
+            for key in deprecated:
+                args.pop(key, None)
         if "scene_description" in args and isinstance(args["scene_description"], list):
             args["scene_description"] = ", ".join(args["scene_description"])
         if "camera_scan_period_sec" not in args and "system_scan_period_sec" in args:

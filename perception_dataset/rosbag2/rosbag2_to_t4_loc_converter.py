@@ -82,7 +82,8 @@ class Rosbag2ToT4LocConverter(Rosbag2ToT4Converter):
 
 class _Rosbag2ToT4LocConverter(_Rosbag2ToT4Converter):
     def __init__(self, params: Rosbag2ConverterParams) -> None:
-        params.world_frame_id = "base_link"
+        # Localization datasets keep ego_pose as identity (no world-frame conversion).
+        params.ego_pose.parent_frame_id = "base_link"
         super().__init__(params)
         self._topic_list = params.topic_list
 

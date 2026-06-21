@@ -371,50 +371,51 @@ The concept is based on [nuScenes](https://arxiv.org/pdf/1903.11027) and [nuPlan
 
 #### Recording Options
 
-There are 2 options to retrieve the corresponding ego pose record, which are using `/tf` or INS message.
+ego_pose translation/rotation is read from a dynamic TF topic. The optional `twist`,
+`acceleration`, and `geocoordinate` fields are each populated from a freely chosen topic; omit a
+topic to leave that field unset.
 
-Note that during recording, each record is result in interpolating at the timestamp corresponding to the particular sensor data.
+Each record is interpolated at the timestamp of the corresponding sensor data.
 
-##### With `/tf` message
+##### ego_pose (translation / rotation)
 
-In this option, it is assumed that input RosBag contains `/tf` message.
-
-> [!WARNING]
-> This option does not record `velocity`, `acceleration` and `geocoordinate` fields.
-
-In order to enable to create ego pose records using `/tf` message, set `with_ins: false` in your configuration:
+Read from `ego_pose.tf_topic` as the transform `parent_frame_id <- child_frame_id`. The defaults
+read `map <- base_link` from `/tf`:
 
 ```yaml
-task: convert_rosbag2_to_non_annotated_t4
-description:
-  scene: ""
 conversion:
-  ...
-  with_ins: false # use `/tf` message
-  ...
+  ego_pose:
+    tf_topic: /tf # dynamic TF topic (default /tf)
+    parent_frame_id: map # target / world frame (default map)
+    child_frame_id: base_link # source / ego frame (default base_link)
 ```
 
-##### With INS messages
+When `parent_frame_id == child_frame_id` the pose is the identity and no TF lookup is required.
 
-In this option, it is assumed that input RosBag contains following messages, which are related to INS.
+##### twist / acceleration / geocoordinate (optional)
 
-|          Topic          |            Type             | Description                                                          |
-| :---------------------: | :-------------------------: | -------------------------------------------------------------------- |
-|  `/ins/oxts/odometry`   |   `nav_msgs/msg/Odometry`   | An estimate of a position and velocity in free space.                |
-|     `/ins/oxts/imu`     |    `sensor_msgs/msg/Imu`    | An IMU (Internal Measurement Unit) data.                             |
-| `/ins/oxts/nav_sat_fix` | `sensor_msgs/msg/NavSatFix` | Navigation Satellite fix for any Global Navigation Satellite System. |
-
-In order to enable to create ego pose records using INS message, set `with_ins: true` in your configuration:
+Set the corresponding `*_topic` to populate the field; leave it unset to skip. `twist` and
+`acceleration` are stored in the ego `child_frame_id`: when the source message frame differs, the
+vector is rotated into the child frame via `/tf_static` (rotation only; no sign heuristics).
+`geocoordinate` (NavSatFix) is stored verbatim with no frame transform.
 
 ```yaml
-task: convert_rosbag2_to_non_annotated_t4
-description:
-  scene: ""
 conversion:
-  ...
-  with_ins: true # use INS messages
-  ...
+  # nav_msgs/Odometry | geometry_msgs/TwistStamped | geometry_msgs/TwistWithCovarianceStamped
+  twist_topic: /localization/kinematic_state
+  # sensor_msgs/Imu | geometry_msgs/AccelStamped | geometry_msgs/AccelWithCovarianceStamped
+  acceleration_topic: /localization/acceleration
+  # sensor_msgs/NavSatFix
+  geocoordinate_topic: /sensing/gnss/septentrio/nav_sat_fix
 ```
+
+An unsupported message type, or a configured topic that is absent from the rosbag, raises an error
+(it is not silently skipped).
+
+> [!NOTE]
+> Out-of-range query timestamps currently extrapolate (`twist`/`acceleration` silently,
+> `geocoordinate` with a warning). Replacing extrapolation with a null value is planned for a
+> future change.
 
 #### Items
 
