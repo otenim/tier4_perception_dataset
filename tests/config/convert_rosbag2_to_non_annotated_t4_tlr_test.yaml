@@ -4,7 +4,6 @@ description:
 conversion:
   input_base: ./data/t4_sample_0/filtered_rosbag
   output_base: ./data/t4_sample_0/non_annotated_dataset_tlr_generated
-  world_frame_id: "map"
   skip_timestamp: 0.0
   num_load_frames: 0
   start_timestamp_sec: 0.0

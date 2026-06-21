@@ -1,6 +1,6 @@
 """from https://github.com/tier4/ros2bag_extensions/blob/main/ros2bag_extensions/ros2bag_extensions/verb/__init__.py"""
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import builtin_interfaces.msg
 from geometry_msgs.msg import TransformStamped
@@ -20,6 +20,7 @@ class Rosbag2Reader:
         bag_dir: str,
         with_world_frame_conversion: bool = False,
         with_sensor_frame_conversion: bool = True,
+        tf_topic: str = "/tf",
     ):
         self._bag_dir: str = bag_dir
 
@@ -27,6 +28,7 @@ class Rosbag2Reader:
         self._topic_name_to_topic_count = get_topic_count(self._bag_dir)
         self._is_tf_needed = with_world_frame_conversion
         self._is_tf_static_needed = with_sensor_frame_conversion
+        self._tf_topic = tf_topic
 
         #  start time in seconds
         self.start_timestamp = self._get_starting_time()
@@ -87,12 +89,12 @@ class Rosbag2Reader:
         return first_timestamp
 
     def _set_tf_buffer(self):
-        """set /tf and /tf_static to tf_buffer"""
-        if self._is_tf_needed and "/tf" not in self._topic_name_to_topic_type:
-            raise ValueError(f"/tf is not in {self._bag_dir}")
+        """set the dynamic TF topic and /tf_static to tf_buffer"""
+        if self._is_tf_needed and self._tf_topic not in self._topic_name_to_topic_type:
+            raise ValueError(f"{self._tf_topic} is not in {self._bag_dir}")
         if self._is_tf_static_needed and "/tf_static" not in self._topic_name_to_topic_type:
             raise ValueError(f"/tf_static is not in {self._bag_dir}")
-        for message in self.read_messages(topics=["/tf"]):
+        for message in self.read_messages(topics=[self._tf_topic]):
             for transform in message.transforms:
                 self._tf_buffer.set_transform(transform, "default_authority")
 
@@ -115,6 +117,10 @@ class Rosbag2Reader:
 
     def get_topic_count(self, topic_name: str) -> int:
         return self._topic_name_to_topic_count.get(topic_name, 0)
+
+    def get_topic_type(self, topic_name: str) -> Optional[str]:
+        """Return the message type string of a topic (e.g. "nav_msgs/msg/Odometry"), or None."""
+        return self._topic_name_to_topic_type.get(topic_name)
 
     def read_camera_info(self) -> Any:
         reader = create_reader(self._bag_dir)

@@ -97,11 +97,8 @@ class _Rosbag2ToT4Converter(_Rosbag2ToNonAnnotatedT4Converter):
         self._object_topic_name: str = params.object_topic_name
         self._calc_object_topic_num()
 
-        # frame_id of coordinate transformation
         self._object_msg_type: str = params.object_msg_type
-        self._ego_pose_target_frame: str = params.world_frame_id
-        self._ego_pose_source_frame: str = "base_link"
-        self._calibrated_sensor_target_frame: str = "base_link"
+        # ego_pose / calibrated_sensor frames are resolved from params.ego_pose in the base class.
 
         self._annotation_files_generator = AnnotationFilesGenerator(with_camera=params.with_camera)
         self._generate_bbox_from_cuboid = params.generate_bbox_from_cuboid

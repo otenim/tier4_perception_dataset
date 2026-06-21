@@ -53,7 +53,11 @@ from perception_dataset.constants import (
     SENSOR_MODALITY_ENUM,
     T4_FORMAT_DIRECTORY_NAME,
 )
-from perception_dataset.ros2.oxts_msgs.ins_handler import EgoState, INSHandler
+from perception_dataset.ros2.ego_state_fields import (
+    AccelerationSource,
+    GeoCoordinateSource,
+    TwistSource,
+)
 from perception_dataset.rosbag2.converter_params import (
     DataType,
     LidarSensor,
@@ -71,7 +75,9 @@ logger = configure_logger(modname=__name__)
 CONFIG_EXCLUDED_ATTRIBUTES = {
     "_input_bag",
     "_bag_reader",
-    "_ins_handler",
+    "_twist_source",
+    "_acceleration_source",
+    "_geocoordinate_source",
     "_vehicle_status_handler",
     "_lidar_info_messages",
     "_get_file_index",
@@ -190,10 +196,12 @@ class _Rosbag2ToNonAnnotatedT4Converter:
         self._accept_frame_drop: bool = params.accept_frame_drop
         self._undistort_image: bool = params.undistort_image
 
-        # frame_id of coordinate transformation
-        self._ego_pose_target_frame: str = params.world_frame_id
-        self._ego_pose_source_frame: str = "base_link"
-        self._calibrated_sensor_target_frame: str = "base_link"
+        # frame_id of coordinate transformation. ego_pose is read from the dynamic TF topic as the
+        # transform parent_frame_id <- child_frame_id; sensors are calibrated relative to the same
+        # ego child frame.
+        self._ego_pose_target_frame: str = params.ego_pose.parent_frame_id
+        self._ego_pose_source_frame: str = params.ego_pose.child_frame_id
+        self._calibrated_sensor_target_frame: str = params.ego_pose.child_frame_id
 
         # Note: To determine if there is any message dropout, including a delay tolerance of 10Hz.
         # Note: The delay tolerance is set to 1.5 times the system scan period.
@@ -246,25 +254,43 @@ class _Rosbag2ToNonAnnotatedT4Converter:
         self._make_directories()
         self._get_file_index = self._make_file_index_func()
 
-        # NOTE: even if `with_world_frame_conversion=True`, `/tf` topic is not needed and
-        # it is retrieved from INS messages.
         with_world_frame_conversion = self._ego_pose_target_frame != self._ego_pose_source_frame
-        is_tf_needed = with_world_frame_conversion and not params.with_ins
-        is_tf_static_needed = len(self._radar_sensors) > 0 or len(self._camera_sensors) > 0
-        self._bag_reader = Rosbag2Reader(self._input_bag, is_tf_needed, is_tf_static_needed)
+        is_tf_needed = with_world_frame_conversion
+        # twist/acceleration may need /tf_static to rotate the source vector into the ego child frame.
+        needs_optional_field_rotation = bool(params.twist_topic or params.acceleration_topic)
+        is_tf_static_needed = (
+            len(self._radar_sensors) > 0
+            or len(self._camera_sensors) > 0
+            or needs_optional_field_rotation
+        )
+        self._bag_reader = Rosbag2Reader(
+            self._input_bag,
+            is_tf_needed,
+            is_tf_static_needed,
+            tf_topic=params.ego_pose.tf_topic,
+        )
         self._calc_actual_num_load_frames()
 
-        # for Co-MLOps
-        self._with_ins = params.with_ins
         self._with_vehicle_status = params.with_vehicle_status
-        self._optional_ins_lookup_warning_logged = False
 
-        if self._with_ins:
-            self._ins_handler = INSHandler(
-                params.input_bag_path, topic_mapping=params.ins_topic_mapping
+        # Optional ego_pose fields, each populated from a freely chosen topic (None when unset).
+        self._twist_source: Optional[TwistSource] = (
+            TwistSource(self._bag_reader, params.twist_topic, self._ego_pose_source_frame)
+            if params.twist_topic
+            else None
+        )
+        self._acceleration_source: Optional[AccelerationSource] = (
+            AccelerationSource(
+                self._bag_reader, params.acceleration_topic, self._ego_pose_source_frame
             )
-        else:
-            self._ins_handler = self._make_optional_ins_handler(params)
+            if params.acceleration_topic
+            else None
+        )
+        self._geocoordinate_source: Optional[GeoCoordinateSource] = (
+            GeoCoordinateSource(self._bag_reader, params.geocoordinate_topic)
+            if params.geocoordinate_topic
+            else None
+        )
 
         if self._with_vehicle_status:
             from perception_dataset.ros2.vehicle_msgs.vehicle_status_handler import (
@@ -274,27 +300,6 @@ class _Rosbag2ToNonAnnotatedT4Converter:
             self._vehicle_status_handler = VehicleStatusHandler(params.input_bag_path)
         else:
             self._vehicle_status_handler = None
-
-    def _make_optional_ins_handler(self, params: Rosbag2ConverterParams) -> Optional[INSHandler]:
-        topic_mapping = INSHandler.get_topic_mapping(params.ins_topic_mapping)
-        missing_topics = [
-            topic
-            for topic in topic_mapping.values()
-            if not self._bag_reader.get_topic_count(topic)
-        ]
-        if missing_topics:
-            logger.info(
-                "Skipping optional INS ego_pose fields because topics are not found: "
-                f"{missing_topics}"
-            )
-            return None
-
-        try:
-            return INSHandler(params.input_bag_path, topic_mapping=params.ins_topic_mapping)
-        except Exception as e:
-            logger.warning(f"Skipping optional INS ego_pose fields: {e}")
-            self._optional_ins_lookup_warning_logged = True
-            return None
 
     def _calc_actual_num_load_frames(self):
         # calculate minimum number of available frames in the rosbag
@@ -1242,109 +1247,40 @@ class _Rosbag2ToNonAnnotatedT4Converter:
         return sample_data_token
 
     def _generate_ego_pose(self, stamp: builtin_interfaces.msg.Time) -> str:
-        if self._with_ins:
-            ego_state = self._ins_handler.get_ego_state(stamp=stamp)
-            twist, acceleration, geocoordinate = self._get_ins_ego_pose_fields(
-                stamp, ego_state=ego_state
-            )
+        transform_stamped = self._bag_reader.get_transform_stamped(
+            target_frame=self._ego_pose_target_frame,
+            source_frame=self._ego_pose_source_frame,
+            stamp=stamp,
+        )
+        twist = self._twist_source.lookup(stamp) if self._twist_source is not None else None
+        acceleration = (
+            self._acceleration_source.lookup(stamp)
+            if self._acceleration_source is not None
+            else None
+        )
+        geocoordinate = (
+            self._geocoordinate_source.lookup(stamp)
+            if self._geocoordinate_source is not None
+            else None
+        )
 
-            ego_pose_token = self._ego_pose_table.insert_into_table(
-                reuse_if_duplicate=True,
-                translation=(
-                    ego_state.translation.x,
-                    ego_state.translation.y,
-                    ego_state.translation.z,
-                ),
-                rotation=(
-                    ego_state.rotation.w,
-                    ego_state.rotation.x,
-                    ego_state.rotation.y,
-                    ego_state.rotation.z,
-                ),
-                timestamp=rosbag2_utils.stamp_to_nusc_timestamp(ego_state.header.stamp),
-                twist=twist,
-                acceleration=acceleration,
-                geocoordinate=geocoordinate,
-            )
-        else:
-            transform_stamped = self._bag_reader.get_transform_stamped(
-                target_frame=self._ego_pose_target_frame,
-                source_frame=self._ego_pose_source_frame,
-                stamp=stamp,
-            )
-            twist, acceleration, geocoordinate = self._get_ins_ego_pose_fields(stamp)
-
-            ego_pose_token = self._ego_pose_table.insert_into_table(
-                reuse_if_duplicate=True,
-                translation=(
-                    transform_stamped.transform.translation.x,
-                    transform_stamped.transform.translation.y,
-                    transform_stamped.transform.translation.z,
-                ),
-                rotation=(
-                    transform_stamped.transform.rotation.w,
-                    transform_stamped.transform.rotation.x,
-                    transform_stamped.transform.rotation.y,
-                    transform_stamped.transform.rotation.z,
-                ),
-                timestamp=rosbag2_utils.stamp_to_nusc_timestamp(transform_stamped.header.stamp),
-                twist=twist,
-                acceleration=acceleration,
-                geocoordinate=geocoordinate,
-            )
-
-        return ego_pose_token
-
-    def _get_ins_ego_pose_fields(
-        self,
-        stamp: builtin_interfaces.msg.Time,
-        ego_state: Optional[EgoState] = None,
-    ) -> Tuple[
-        Optional[Tuple[float, ...]],
-        Optional[Tuple[float, ...]],
-        Optional[Tuple[float, float, float]],
-    ]:
-        if self._ins_handler is None:
-            if self._with_ins:
-                raise RuntimeError("INS handler is not initialized while with_ins is enabled.")
-            return None, None, None
-
-        try:
-            if ego_state is None:
-                ego_state = self._ins_handler.get_ego_state(stamp=stamp)
-            geocoordinate = self._ins_handler.lookup_nav_sat_fixes(stamp)
-        except Exception as e:
-            if self._with_ins:
-                raise RuntimeError(
-                    f"Failed to get ego pose fields from INS at stamp {stamp}."
-                ) from e
-            if not self._optional_ins_lookup_warning_logged:
-                logger.warning(f"Skipping optional INS ego_pose fields: {e}")
-                self._optional_ins_lookup_warning_logged = True
-            return None, None, None
-        geocoordinate_tuple = None
-        if geocoordinate is not None:
-            geocoordinate_tuple = (
-                geocoordinate.latitude,
-                geocoordinate.longitude,
-                geocoordinate.altitude,
-            )
-
-        return (
-            (
-                ego_state.twist.linear.x,
-                ego_state.twist.linear.y,
-                ego_state.twist.linear.z,
-                ego_state.twist.angular.z,
-                ego_state.twist.angular.y,
-                ego_state.twist.angular.x,
+        return self._ego_pose_table.insert_into_table(
+            reuse_if_duplicate=True,
+            translation=(
+                transform_stamped.transform.translation.x,
+                transform_stamped.transform.translation.y,
+                transform_stamped.transform.translation.z,
             ),
-            (
-                ego_state.accel.x,
-                ego_state.accel.y,
-                ego_state.accel.z,
+            rotation=(
+                transform_stamped.transform.rotation.w,
+                transform_stamped.transform.rotation.x,
+                transform_stamped.transform.rotation.y,
+                transform_stamped.transform.rotation.z,
             ),
-            geocoordinate_tuple,
+            timestamp=rosbag2_utils.stamp_to_nusc_timestamp(transform_stamped.header.stamp),
+            twist=twist,
+            acceleration=acceleration,
+            geocoordinate=geocoordinate,
         )
 
     def _generate_vehicle_state(self, stamp: builtin_interfaces.msg.Time) -> str:
