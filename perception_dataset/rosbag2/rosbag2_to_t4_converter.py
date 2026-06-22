@@ -14,6 +14,7 @@ from t4_devkit.schema.tables import (
     SampleData,
     Scene,
     Sensor,
+    VehicleState,
 )
 
 from perception_dataset.abstract_converter_to_t4 import AbstractAnnotatedToT4Converter
@@ -131,6 +132,10 @@ class _Rosbag2ToT4Converter(_Rosbag2ToNonAnnotatedT4Converter):
         self._sample_table = TableHandler(Sample)
         self._sample_data_table = TableHandler(SampleData)
         self._ego_pose_table = TableHandler(EgoPose)
+        # additional (used in Co-MLops): the base _convert() calls _convert_vehicle_state when
+        # with_vehicle_status is set, which writes into this table. The annotated converter inherits
+        # that _convert(), so it must create the table here too.
+        self._vehicle_state_table = TableHandler(VehicleState)
 
     def convert(self):
         if self._start_timestamp < sys.float_info.epsilon:
