@@ -98,3 +98,12 @@ class TestMappingTables:
 
     def test_hazard_mapping_values(self):
         assert VehicleStatusHandler.HAZARD_MAPPING == {HAZARD_DISABLE: "off", HAZARD_ENABLE: "on"}
+
+    def test_gear2shift_values_are_valid_shiftstates(self):
+        # Every GEAR2SHIFT value must be a member of t4_devkit's ShiftState enum, else writing
+        # vehicle_state raises ValueError (the old "DRIVE" was not a ShiftState; valid is "FORWARD").
+        from t4_devkit.schema.tables.vehicle_state import ShiftState
+
+        valid = {s.value for s in ShiftState}
+        for gear, shift in VehicleStatusHandler.GEAR2SHIFT.items():
+            assert shift in valid, f"GEAR2SHIFT[{gear}]={shift!r} is not a valid ShiftState"
