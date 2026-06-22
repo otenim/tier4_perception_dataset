@@ -273,6 +273,11 @@ class _Rosbag2ToNonAnnotatedT4Converter:
 
         self._with_vehicle_status = params.with_vehicle_status
 
+        # Turn-indicators -> vehicle_state.indicators (independent of with_vehicle_status).
+        self._with_turn_indicators = params.with_turn_indicators
+        self._turn_indicators_topic = params.turn_indicators_topic
+        self._hazard_lights_topic = params.hazard_lights_topic
+
         # Optional ego_pose fields, each populated from a freely chosen topic (None when unset).
         self._twist_source: Optional[TwistSource] = (
             TwistSource(self._bag_reader, params.twist_topic, self._ego_pose_source_frame)
@@ -536,6 +541,9 @@ class _Rosbag2ToNonAnnotatedT4Converter:
 
         if self._with_vehicle_status:
             self._convert_vehicle_state()
+
+        if self._with_turn_indicators:
+            self._convert_turn_indicators()
 
     def _calc_start_timestamp(self) -> float:
         if self._start_timestamp < sys.float_info.epsilon:
@@ -1181,6 +1189,61 @@ class _Rosbag2ToNonAnnotatedT4Converter:
         stamps = [msg.header.stamp for msg in msgs]
         for stamp in stamps:
             self._generate_vehicle_state(stamp)
+
+    def _convert_turn_indicators(self) -> None:
+        """Populate vehicle_state.indicators from the turn-indicators / hazard-lights topics.
+
+        ``left`` / ``right`` come from ``turn_indicators_topic``
+        (autoware_vehicle_msgs/TurnIndicatorsReport); ``hazard`` comes from ``hazard_lights_topic``
+        (autoware_vehicle_msgs/HazardLightsReport), looked up by closest timestamp. One VehicleState
+        record (only ``indicators`` populated) is written per turn-indicators message. Unlike
+        ``_convert_vehicle_state`` this does not depend on the actuation/steering topics, so it works
+        on bags that only carry turn indicators.
+        """
+        from perception_dataset.ros2.vehicle_msgs.vehicle_status_handler import (
+            VehicleStatusHandler,
+        )
+
+        turn_topic = self._turn_indicators_topic
+        hazard_topic = self._hazard_lights_topic
+
+        if self._bag_reader.get_topic_count(turn_topic) == 0:
+            logger.warning(
+                f"with_turn_indicators is set but '{turn_topic}' has no messages; "
+                "no indicator vehicle states will be written."
+            )
+            return
+
+        # Buffer hazard-lights reports for closest-timestamp lookup (hazard is a separate topic from
+        # the turn signals). Empty when the topic is absent -> hazard defaults to "off".
+        hazard_msgs = list(self._bag_reader.read_messages(topics=[hazard_topic]))
+        if len(hazard_msgs) == 0:
+            logger.warning(
+                f"'{hazard_topic}' has no messages; the indicators' hazard field will be 'off'."
+            )
+
+        def closest_hazard_report(stamp: builtin_interfaces.msg.Time) -> Optional[int]:
+            if len(hazard_msgs) == 0:
+                return None
+            query = rosbag2_utils.stamp_to_unix_timestamp(stamp)
+            nearest = min(
+                hazard_msgs,
+                key=lambda m: abs(rosbag2_utils.stamp_to_unix_timestamp(m.stamp) - query),
+            )
+            return nearest.report
+
+        count = 0
+        for msg in self._bag_reader.read_messages(topics=[turn_topic]):
+            indicators = VehicleStatusHandler.build_indicators(
+                msg.report, closest_hazard_report(msg.stamp)
+            )
+            self._vehicle_state_table.insert_into_table(
+                reuse_if_duplicate=True,
+                timestamp=rosbag2_utils.stamp_to_nusc_timestamp(msg.stamp),
+                indicators=indicators,
+            )
+            count += 1
+        logger.info(f"Converted {count} turn-indicator vehicle state(s) from '{turn_topic}'.")
 
     def _generate_image_data(
         self,

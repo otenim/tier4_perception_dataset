@@ -186,6 +186,15 @@ class Rosbag2ConverterParams(BaseModelWithDictAccess):
     geocoordinate_topic: Optional[str] = None
     with_vehicle_status: bool = False  # whether to convert rosbag with vehicle status
 
+    # Turn-indicators -> vehicle_state.indicators. When True, the turn-signal topic (left/right) and
+    # the hazard-lights topic (hazard) are converted into VehicleState records whose only populated
+    # field is `indicators` ({left, right, hazard}), one per turn-indicators message. This is
+    # independent of `with_vehicle_status`: it does NOT require the actuation/steering/gear topics
+    # the full vehicle-status path depends on, so it works on bags that only carry turn indicators.
+    with_turn_indicators: bool = False
+    turn_indicators_topic: str = "/vehicle/status/turn_indicators_status"
+    hazard_lights_topic: str = "/vehicle/status/hazard_lights_status"
+
     def __init__(self, **args):
         deprecated = [key for key in _DEPRECATED_PARAM_KEYS if key in args]
         if deprecated:
