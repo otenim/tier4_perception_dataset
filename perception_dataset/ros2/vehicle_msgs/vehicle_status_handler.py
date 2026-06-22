@@ -1,18 +1,21 @@
-from typing import Any, Dict, List, Optional
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import builtin_interfaces.msg
-from vehicle_msgs.msg import (
-    ActuationStatusStamped,
-    GearReport,
-    HazardLightsReport,
-    SteeringReport,
-    SteeringWheelStatusStamped,
-    TurnIndicatorsReport,
-    VelocityReport,
-)
 
 from perception_dataset.rosbag2.rosbag2_reader import Rosbag2Reader
 from perception_dataset.utils.rosbag2 import stamp_to_unix_timestamp
+
+if TYPE_CHECKING:
+    from autoware_vehicle_msgs.msg import (
+        GearReport,
+        HazardLightsReport,
+        SteeringReport,
+        TurnIndicatorsReport,
+        VelocityReport,
+    )
+    from tier4_vehicle_msgs.msg import ActuationStatusStamped, SteeringWheelStatusStamped
 
 
 class VehicleStatusHandler:
@@ -60,12 +63,21 @@ class VehicleStatusHandler:
         24: "LOW",
     }
 
-    # TurnIndicatorsReport[uint8] -> Dict[str, str]
-    INDICATOR_MAPPING = {
-        0: {"left": "off", "right": "off", "hazard": "off"},
-        1: {"left": "on", "right": "off", "hazard": "off"},
-        2: {"left": "off", "right": "on", "hazard": "off"},
-        3: {"left": "off", "right": "off", "hazard": "on"},
+    # Turn-signal state derived from TurnIndicatorsReport.report (autoware_vehicle_msgs).
+    # Constants: DISABLE=1, ENABLE_LEFT=2, ENABLE_RIGHT=3. There is no 0 and no hazard value -
+    # hazard is reported separately by HazardLightsReport (see HAZARD_MAPPING). Each entry is the
+    # {left, right} state; the hazard field is filled in by `build_indicators`.
+    INDICATOR_MAPPING: Dict[int, Dict[str, str]] = {
+        1: {"left": "off", "right": "off"},  # DISABLE
+        2: {"left": "on", "right": "off"},  # ENABLE_LEFT
+        3: {"left": "off", "right": "on"},  # ENABLE_RIGHT
+    }
+
+    # Hazard state derived from HazardLightsReport.report (autoware_vehicle_msgs).
+    # Constants: DISABLE=1, ENABLE=2.
+    HAZARD_MAPPING: Dict[int, str] = {
+        1: "off",  # DISABLE
+        2: "on",  # ENABLE
     }
 
     def __init__(self, bag_dir: str, *, topic_mapping: Optional[Dict[str, str]] = None) -> None:
@@ -112,8 +124,38 @@ class VehicleStatusHandler:
         """
         return self.GEAR2SHIFT[gear]
 
+    @classmethod
+    def build_indicators(
+        cls, turn_report: int, hazard_report: Optional[int] = None
+    ) -> Dict[str, str]:
+        """Build the T4 ``indicators`` mapping ``{left, right, hazard}``.
+
+        ``left`` / ``right`` come from ``TurnIndicatorsReport.report`` (``turn_report``); ``hazard``
+        comes from ``HazardLightsReport.report`` (``hazard_report``), which is published on a
+        separate topic. ``hazard`` defaults to ``"off"`` when no hazard report is provided. Unknown
+        report values fall back to the off state (no exception) so a single malformed message cannot
+        abort the conversion.
+
+        Args:
+            turn_report (int): Value of ``TurnIndicatorsReport.report``.
+            hazard_report (Optional[int]): Value of ``HazardLightsReport.report``, or ``None`` to
+                leave ``hazard`` off.
+
+        Returns:
+            Dict[str, str]: Mapping with keys [left, right, hazard], values "on"/"off".
+        """
+        state = dict(cls.INDICATOR_MAPPING.get(turn_report, {"left": "off", "right": "off"}))
+        state["hazard"] = (
+            cls.HAZARD_MAPPING.get(hazard_report, "off") if hazard_report is not None else "off"
+        )
+        return state
+
     def indicator_to_state(self, indicator: int) -> Dict[str, str]:
-        """Convert the value of the indicator report to a mapping.
+        """Convert a `TurnIndicatorsReport.report` value into the `{left, right, hazard}` mapping.
+
+        Kept for backward compatibility; `hazard` is always `"off"` here because it cannot be
+        derived from the turn-indicators message alone. Use `build_indicators` to also populate
+        `hazard` from a `HazardLightsReport.report` value.
 
         Args:
             indicator (int): Value of `TurnIndicatorsReport.report`.
@@ -123,7 +165,7 @@ class VehicleStatusHandler:
                 - keys: [left, right, hazard]
                 - values: "on" or "off"
         """
-        return self.INDICATOR_MAPPING[indicator]
+        return self.build_indicators(indicator)
 
     def get_closest_msg(self, key: str, stamp: builtin_interfaces.msg.Time) -> Any:
         assert key in self._buffer

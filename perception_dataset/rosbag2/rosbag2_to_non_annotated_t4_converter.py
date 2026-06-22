@@ -1307,12 +1307,19 @@ class _Rosbag2ToNonAnnotatedT4Converter:
         gear_msg = self._vehicle_status_handler.get_closest_msg(key="gear_status", stamp=stamp)
         shift_state = self._vehicle_status_handler.gear_to_shift(gear_msg.report)
 
-        # indicators
+        # indicators: left/right from turn_indicators_status, hazard from the separate
+        # hazard_lights_status topic (looked up by closest timestamp). Leave hazard "off" when the
+        # bag does not carry hazard_lights_status (build_indicators treats a None report as off).
         turn_indicators_msg = self._vehicle_status_handler.get_closest_msg(
             key="turn_indicators_status", stamp=stamp
         )
-        indicators_state = self._vehicle_status_handler.indicator_to_state(
-            turn_indicators_msg.report
+        hazard_report = None
+        if self._vehicle_status_handler.get_hazard_lights_reports():
+            hazard_report = self._vehicle_status_handler.get_closest_msg(
+                key="hazard_lights_status", stamp=stamp
+            ).report
+        indicators_state = self._vehicle_status_handler.build_indicators(
+            turn_indicators_msg.report, hazard_report
         )
 
         # additional info
