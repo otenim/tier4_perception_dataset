@@ -168,6 +168,22 @@ def test_twist_source_missing_static_transform_raises():
         TwistSource(reader, "/t", child_frame_id="base_link")
 
 
+def test_twist_source_resolve_tf_false_skips_rotation():
+    # Source frame differs from child and NO transform is available; with resolve_tf=False the source
+    # must NOT raise and must store the value verbatim (no rotation into the ego child frame).
+    msgs = [
+        _twist_cov_stamped(0.0, lin=(1.0, 0.0, 0.0), ang=(0.0, 0.0, 1.0), frame_id="map"),
+        _twist_cov_stamped(2.0, lin=(1.0, 0.0, 0.0), ang=(0.0, 0.0, 1.0), frame_id="map"),
+    ]
+    reader = FakeReader(
+        {"/t": "geometry_msgs/msg/TwistWithCovarianceStamped"}, {"/t": msgs}, transforms={}
+    )
+    src = TwistSource(reader, "/t", child_frame_id="base_link", resolve_tf=False)
+    vx, vy, vz, yaw_rate, pitch_rate, roll_rate = src.lookup(_stamp(1.0))
+    np.testing.assert_allclose([vx, vy, vz], [1.0, 0.0, 0.0], atol=1e-9)
+    np.testing.assert_allclose([yaw_rate, pitch_rate, roll_rate], [1.0, 0.0, 0.0], atol=1e-9)
+
+
 # --- AccelerationSource ---------------------------------------------------------------------------
 def test_acceleration_source_imu():
     msgs = [_imu(0.0, (1.0, 2.0, 9.8)), _imu(2.0, (3.0, 4.0, 9.8))]
@@ -190,6 +206,31 @@ def test_acceleration_source_missing_topic_raises():
     reader = FakeReader({}, {})
     with pytest.raises(ValueError, match="not present in the rosbag"):
         AccelerationSource(reader, "/nope", child_frame_id="base_link")
+
+
+def test_acceleration_source_resolve_tf_true_requires_transform():
+    # Default resolve_tf=True with a differing source frame ("map") and no transform must raise -
+    # contrast for the resolve_tf=False case below.
+    msgs = [_accel_cov_stamped(0.0, (1.0, 0.0, 0.0), frame_id="map")]
+    reader = FakeReader(
+        {"/acc": "geometry_msgs/msg/AccelWithCovarianceStamped"}, {"/acc": msgs}, transforms={}
+    )
+    with pytest.raises(ValueError, match="static transform"):
+        AccelerationSource(reader, "/acc", child_frame_id="base_link")
+
+
+def test_acceleration_source_resolve_tf_false_skips_rotation():
+    # frame_id="map" differs from the child frame and no transform exists; resolve_tf=False must NOT
+    # raise and must store the value verbatim (no rotation).
+    msgs = [
+        _accel_cov_stamped(0.0, (0.0, 0.0, 0.0), frame_id="map"),
+        _accel_cov_stamped(2.0, (2.0, 4.0, 6.0), frame_id="map"),
+    ]
+    reader = FakeReader(
+        {"/acc": "geometry_msgs/msg/AccelWithCovarianceStamped"}, {"/acc": msgs}, transforms={}
+    )
+    src = AccelerationSource(reader, "/acc", child_frame_id="base_link", resolve_tf=False)
+    np.testing.assert_allclose(src.lookup(_stamp(1.0)), [1.0, 2.0, 3.0])
 
 
 # --- GeoCoordinateSource --------------------------------------------------------------------------

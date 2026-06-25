@@ -14,9 +14,16 @@ conversion:
   accept_frame_drop: False # If true, the conversion will continue even if the LiDAR frame is dropped.
   undistort_image: False # If true, the camera image will be undistorted.
   # Optional ego_pose fields from freely chosen topics (omit a key to skip that field).
-  # twist/acceleration are rotated into child_frame_id via /tf_static when the source frame differs.
+  # twist_topic / acceleration_topic accept EITHER a bare topic name OR a {name, resolve_tf} mapping.
+  # With resolve_tf: true (default) the value is rotated into child_frame_id via /tf_static when the
+  # source frame differs; with resolve_tf: false it is stored verbatim in its source frame (no
+  # rotation, no /tf_static needed) - use this when the source is already in child_frame_id, or is a
+  # non-static frame (e.g. map) you do not want rotated by a single static transform.
   # twist_topic: /localization/kinematic_state               # Odometry | TwistStamped | TwistWithCovarianceStamped
   # acceleration_topic: /localization/acceleration           # Imu | AccelStamped | AccelWithCovarianceStamped
+  # acceleration_topic:                                       # detailed form (equivalent options):
+  #   name: /localization/acceleration
+  #   resolve_tf: false                                       # store as-is, skip tf rotation
   # geocoordinate_topic: /sensing/gnss/septentrio/nav_sat_fix # NavSatFix (stored verbatim)
   # The following configuration is generally not modified unless there are changes to the vehicle sensor configuration.
   max_camera_jitter_sec: 0.005

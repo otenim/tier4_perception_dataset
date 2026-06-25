@@ -3,7 +3,9 @@
 Each source reads one freely chosen topic, time-interpolates the value to a query stamp, and returns
 it for ego_pose.json. Values are taken from the message as-is (no sign heuristics); twist and
 acceleration are rotated into the ego child frame via /tf_static only when the source message frame
-differs from it. geocoordinate (NavSatFix) is stored verbatim with no frame transform.
+differs from it AND that field's resolve_tf is True (the default). With resolve_tf False the value is
+stored verbatim in its source frame (no rotation, no tf lookup). geocoordinate (NavSatFix) is stored
+verbatim with no frame transform.
 
 This replaces the former INSHandler, which hard-coded INS topics and applied an ad-hoc orientation
 / sign correction. The module avoids importing ROS message types or Rosbag2Reader at runtime (it
@@ -53,7 +55,7 @@ def _stamp_to_unix(stamp) -> float:
 
 
 def _msg_name(type_str: Optional[str]) -> str:
-    """ "pkg/msg/Type" or "pkg/Type" -> "Type"."""
+    """Return the bare type from a "pkg/msg/Type" or "pkg/Type" string."""
     return type_str.split("/")[-1] if type_str else ""
 
 
@@ -175,7 +177,8 @@ def _resolve_rotation(
 ) -> Optional[Rotation]:
     """Static rotation mapping a vector from source_frame_id into child_frame_id, or None when no
     rotation is needed (frames equal/empty). Raises with a clear message if the static transform is
-    unavailable (e.g. the frame is not connected in /tf_static)."""
+    unavailable (e.g. the frame is not connected in /tf_static).
+    """
     if not source_frame_id or source_frame_id == child_frame_id:
         return None
     try:
@@ -194,9 +197,16 @@ def _resolve_rotation(
 
 
 class TwistSource:
-    """twist (vx, vy, vz, yaw_rate, pitch_rate, roll_rate) in the ego child frame."""
+    """twist (vx, vy, vz, yaw_rate, pitch_rate, roll_rate).
 
-    def __init__(self, reader: "Rosbag2Reader", topic: str, child_frame_id: str) -> None:
+    With resolve_tf True (default) the value is rotated into the ego child frame via /tf_static when
+    the source frame differs; with resolve_tf False it is taken verbatim in the source message frame
+    (no rotation, no tf lookup).
+    """
+
+    def __init__(
+        self, reader: "Rosbag2Reader", topic: str, child_frame_id: str, resolve_tf: bool = True
+    ) -> None:
         type_str = reader.get_topic_type(topic)
         if type_str is None:
             raise ValueError(f"twist_topic '{topic}' is not present in the rosbag.")
@@ -223,8 +233,12 @@ class TwistSource:
             raise ValueError(f"twist_topic '{topic}' contains no messages.")
         self._linear = _VectorInterpolator(timestamps, linear, name=f"{topic} (linear)")
         self._angular = _VectorInterpolator(timestamps, angular, name=f"{topic} (angular)")
-        self._rotation = _resolve_rotation(
-            reader, child_frame_id, source_frame, first_stamp, context=f"twist_topic '{topic}'"
+        self._rotation = (
+            _resolve_rotation(
+                reader, child_frame_id, source_frame, first_stamp, context=f"twist_topic '{topic}'"
+            )
+            if resolve_tf
+            else None
         )
 
     def lookup(self, stamp) -> Tuple[float, float, float, float, float, float]:
@@ -246,9 +260,16 @@ class TwistSource:
 
 
 class AccelerationSource:
-    """acceleration (ax, ay, az) in the ego child frame."""
+    """acceleration (ax, ay, az).
 
-    def __init__(self, reader: "Rosbag2Reader", topic: str, child_frame_id: str) -> None:
+    With resolve_tf True (default) the value is rotated into the ego child frame via /tf_static when
+    the source frame differs; with resolve_tf False it is taken verbatim in the source message frame
+    (no rotation, no tf lookup).
+    """
+
+    def __init__(
+        self, reader: "Rosbag2Reader", topic: str, child_frame_id: str, resolve_tf: bool = True
+    ) -> None:
         type_str = reader.get_topic_type(topic)
         if type_str is None:
             raise ValueError(f"acceleration_topic '{topic}' is not present in the rosbag.")
@@ -272,12 +293,16 @@ class AccelerationSource:
         if not timestamps:
             raise ValueError(f"acceleration_topic '{topic}' contains no messages.")
         self._interp = _VectorInterpolator(timestamps, values, name=f"{topic}")
-        self._rotation = _resolve_rotation(
-            reader,
-            child_frame_id,
-            source_frame,
-            first_stamp,
-            context=f"acceleration_topic '{topic}'",
+        self._rotation = (
+            _resolve_rotation(
+                reader,
+                child_frame_id,
+                source_frame,
+                first_stamp,
+                context=f"acceleration_topic '{topic}'",
+            )
+            if resolve_tf
+            else None
         )
 
     def lookup(self, stamp) -> Tuple[float, float, float]:
