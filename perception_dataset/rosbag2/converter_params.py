@@ -109,6 +109,27 @@ class EgoPoseParams(BaseModelWithDictAccess):
     child_frame_id: str = "base_link"  # ego_pose source frame (the ego/body frame)
 
 
+class EgoStateFieldSource(BaseModelWithDictAccess):
+    """Source spec for an optional ego_pose field that may be tf-rotated (twist / acceleration).
+
+    Accepted config forms (see Rosbag2ConverterParams.twist_topic / acceleration_topic):
+      * a bare topic-name string (legacy):   twist_topic: /localization/kinematic_state
+      * a mapping with per-field options:     twist_topic:
+                                                name: /localization/kinematic_state
+                                                resolve_tf: false
+
+    `resolve_tf` (default True) controls whether the source vector is rotated into
+    ego_pose.child_frame_id via tf. When True the value is rotated from its source message frame into
+    the ego child frame (a /tf_static lookup, matching the previous behavior). When False the value is
+    written into the dataset verbatim, in its source frame, with NO rotation and NO tf lookup - so
+    /tf_static is not required for that field and a world-frame source (e.g. `map`) is stored as-is
+    instead of being mis-rotated by a single static rotation.
+    """
+
+    name: str
+    resolve_tf: bool = True
+
+
 class Rosbag2ConverterParams(BaseModelWithDictAccess):
     task: str
     input_base: str  # path to the input rosbag2 directory (multiple rosbags in the directory)
@@ -173,16 +194,19 @@ class Rosbag2ConverterParams(BaseModelWithDictAccess):
     # ego_pose (translation/rotation) from a dynamic TF topic; see EgoPoseParams.
     ego_pose: EgoPoseParams = Field(default_factory=EgoPoseParams)
     # Optional ego-state fields written into ego_pose.json, each populated from a freely chosen topic
-    # (leave None to skip that field). Values are taken from the message as-is, except twist/accel
-    # are rotated into ego_pose.child_frame_id via /tf_static when the source frame differs (no sign
-    # heuristics). Supported source types:
+    # (omit a key to skip that field). twist_topic/acceleration_topic accept EITHER a bare topic-name
+    # string (legacy) OR a mapping {name: <topic>, resolve_tf: <bool>} (see EgoStateFieldSource). By
+    # default (resolve_tf: true) the source vector is rotated into ego_pose.child_frame_id via
+    # /tf_static when the source frame differs (no sign heuristics); with resolve_tf: false the value
+    # is stored verbatim in its source frame with no rotation and no tf lookup. geocoordinate_topic is
+    # a plain topic name and is always stored verbatim (no frame transform). Supported source types:
     #   twist_topic:         nav_msgs/Odometry | geometry_msgs/TwistStamped
     #                        | geometry_msgs/TwistWithCovarianceStamped
     #   acceleration_topic:  sensor_msgs/Imu | geometry_msgs/AccelStamped
     #                        | geometry_msgs/AccelWithCovarianceStamped
     #   geocoordinate_topic: sensor_msgs/NavSatFix (stored verbatim, no frame transform)
-    twist_topic: Optional[str] = None
-    acceleration_topic: Optional[str] = None
+    twist_topic: Optional[EgoStateFieldSource] = None
+    acceleration_topic: Optional[EgoStateFieldSource] = None
     geocoordinate_topic: Optional[str] = None
     with_vehicle_status: bool = False  # whether to convert rosbag with vehicle status
 
@@ -246,4 +270,24 @@ class Rosbag2ConverterParams(BaseModelWithDictAccess):
     def check_object_msg_type(cls, v):
         if v not in ["DetectedObjects", "TrackedObjects", "TrafficLights"]:
             raise ValueError(f"Unexpected object message type: {type(v)}")
+        return v
+
+    @field_validator("twist_topic", "acceleration_topic", mode="before")
+    def normalize_ego_state_field_source(cls, v):
+        """Accept both the legacy bare-string form and the detailed mapping form for
+        twist_topic/acceleration_topic, and treat an empty/blank topic as unset (None) - matching the
+        previous Optional[str] behavior where a falsy value disabled the field. A non-empty string
+        becomes {name: <topic>} (resolve_tf defaults True); a mapping is passed through to
+        EgoStateFieldSource.
+        """
+        if v is None or isinstance(v, EgoStateFieldSource):
+            return v
+        if isinstance(v, str):
+            v = v.strip()
+            return {"name": v} if v else None
+        if isinstance(v, dict):
+            name = str(v.get("name") or "").strip()
+            if not name:
+                return None
+            return {**v, "name": name}
         return v

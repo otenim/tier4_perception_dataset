@@ -256,8 +256,12 @@ class _Rosbag2ToNonAnnotatedT4Converter:
 
         with_world_frame_conversion = self._ego_pose_target_frame != self._ego_pose_source_frame
         is_tf_needed = with_world_frame_conversion
-        # twist/acceleration may need /tf_static to rotate the source vector into the ego child frame.
-        needs_optional_field_rotation = bool(params.twist_topic or params.acceleration_topic)
+        # twist/acceleration need /tf_static to rotate the source vector into the ego child frame, but
+        # ONLY when resolve_tf is enabled for that field (resolve_tf: false stores the value verbatim
+        # in its source frame, so no tf lookup runs and /tf_static is not required for it).
+        needs_optional_field_rotation = (
+            params.twist_topic is not None and params.twist_topic.resolve_tf
+        ) or (params.acceleration_topic is not None and params.acceleration_topic.resolve_tf)
         is_tf_static_needed = (
             len(self._radar_sensors) > 0
             or len(self._camera_sensors) > 0
@@ -273,17 +277,26 @@ class _Rosbag2ToNonAnnotatedT4Converter:
 
         self._with_vehicle_status = params.with_vehicle_status
 
-        # Optional ego_pose fields, each populated from a freely chosen topic (None when unset).
+        # Optional ego_pose fields, each populated from a freely chosen topic (None when unset). For
+        # twist/acceleration the topic name and resolve_tf flag come from EgoStateFieldSource.
         self._twist_source: Optional[TwistSource] = (
-            TwistSource(self._bag_reader, params.twist_topic, self._ego_pose_source_frame)
-            if params.twist_topic
+            TwistSource(
+                self._bag_reader,
+                params.twist_topic.name,
+                self._ego_pose_source_frame,
+                resolve_tf=params.twist_topic.resolve_tf,
+            )
+            if params.twist_topic is not None
             else None
         )
         self._acceleration_source: Optional[AccelerationSource] = (
             AccelerationSource(
-                self._bag_reader, params.acceleration_topic, self._ego_pose_source_frame
+                self._bag_reader,
+                params.acceleration_topic.name,
+                self._ego_pose_source_frame,
+                resolve_tf=params.acceleration_topic.resolve_tf,
             )
-            if params.acceleration_topic
+            if params.acceleration_topic is not None
             else None
         )
         self._geocoordinate_source: Optional[GeoCoordinateSource] = (

@@ -2,6 +2,7 @@ from pydantic import ValidationError
 import pytest
 
 from perception_dataset.rosbag2.converter_params import (
+    EgoStateFieldSource,
     LidarSensor,
     LidarSourceMapping,
     Rosbag2ConverterParams,
@@ -86,3 +87,45 @@ class TestLidarSensor:
 
         assert len(e.value.errors()) == 1
         assert e.value.errors()[0]["type"] == "value_error"
+
+
+class TestEgoStateFieldSourceParsing:
+    """twist_topic / acceleration_topic accept a bare string (legacy) or a {name, resolve_tf} mapping."""
+
+    def _params(self, **overrides):
+        base = {
+            "task": "task",
+            "input_base": "input_base",
+            "output_base": "output_base",
+            "object_msg_type": "DetectedObjects",
+            "num_load_frames": 1,
+            "skip_timestamp": 1.0,
+        }
+        base.update(overrides)
+        return Rosbag2ConverterParams(**base)
+
+    def test_legacy_string_form_defaults_resolve_tf_true(self):
+        p = self._params(twist_topic="/localization/kinematic_state")
+        assert isinstance(p.twist_topic, EgoStateFieldSource)
+        assert p.twist_topic.name == "/localization/kinematic_state"
+        assert p.twist_topic.resolve_tf is True
+
+    def test_detailed_mapping_resolve_tf_false(self):
+        p = self._params(
+            acceleration_topic={"name": "/localization/acceleration", "resolve_tf": False}
+        )
+        assert isinstance(p.acceleration_topic, EgoStateFieldSource)
+        assert p.acceleration_topic.name == "/localization/acceleration"
+        assert p.acceleration_topic.resolve_tf is False
+
+    def test_detailed_mapping_defaults_resolve_tf_true(self):
+        p = self._params(twist_topic={"name": "/odom"})
+        assert p.twist_topic.name == "/odom"
+        assert p.twist_topic.resolve_tf is True
+
+    def test_blank_or_omitted_topic_is_unset(self):
+        p = self._params(twist_topic="", acceleration_topic="   ")
+        assert p.twist_topic is None
+        assert p.acceleration_topic is None
+        assert self._params().twist_topic is None
+        assert self._params().acceleration_topic is None
